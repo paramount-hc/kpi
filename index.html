@@ -5,17 +5,166 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="robots" content="noindex,nofollow">
 <meta name="theme-color" content="#141B45">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="KPI Paramount">
 <title>KPI &amp; Performance Appraisal</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141B45'/%3E%3Ccircle cx='32' cy='32' r='18' fill='none' stroke='%23E39717' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23E39717'/%3E%3C/svg%3E">
 <style>
   html,body{margin:0;height:100%;background:#141B45;overflow:hidden}
   iframe{position:fixed;inset:0;width:100%;height:100%;height:100dvh;border:0;display:block}
+  /* Kartu izin notifikasi (di luar aplikasi agar browser mengizinkan permintaan izin) */
+  .pn{position:fixed;left:20px;bottom:20px;z-index:10;width:360px;max-width:calc(100vw - 32px);background:#fff;color:#121838;border-radius:18px;
+    box-shadow:0 24px 60px rgba(10,14,40,.4);padding:16px 18px 14px;font:14px/1.5 "Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    animation:pnIn .35s cubic-bezier(.32,.72,0,1)}
+  .pn[hidden]{display:none}
+  @keyframes pnIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  .pn b{display:block;font-size:15px;font-weight:800;margin-bottom:4px}
+  .pn p{margin:0;color:#545C80;font-size:13.5px}
+  .pn ol{margin:6px 0 0;padding-left:20px;color:#545C80;font-size:13px}
+  .pn-act{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
+  .pn-act button{height:38px;padding:0 16px;border-radius:999px;border:0;font-weight:700;font-size:13.5px;font-family:inherit;cursor:pointer}
+  .pn-no{background:rgba(30,39,97,.07);color:#121838}
+  .pn-yes{background:#E39717;color:#141B45}
+  @media (max-width:640px){.pn{left:12px;right:12px;width:auto;bottom:84px}}
 </style>
 </head>
 <body>
-<iframe src="https://script.google.com/macros/s/AKfycbyx3bOaN6klnLf7IUXhAquCSBGJcc_BgnYBwgGrVN0mDx8VRi24N-8urlXwKkKNZAcvqA/exec"
+<iframe id="app" src="https://script.google.com/macros/s/AKfycbyx3bOaN6klnLf7IUXhAquCSBGJcc_BgnYBwgGrVN0mDx8VRi24N-8urlXwKkKNZAcvqA/exec"
         title="KPI &amp; Performance Appraisal"
         allow="clipboard-write; fullscreen"
         referrerpolicy="no-referrer-when-downgrade"></iframe>
+<div class="pn" id="pn" role="dialog" aria-live="polite" hidden></div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-messaging-compat.js"></script>
+<script>
+(function () {
+  var FIREBASE = {
+    apiKey: 'AIzaSyC1XeL4Ow588LZUDmu9Ui9rqb2X_FaWGno',
+    authDomain: 'kpi-paramount.firebaseapp.com',
+    projectId: 'kpi-paramount',
+    storageBucket: 'kpi-paramount.firebasestorage.app',
+    messagingSenderId: '1013165214449',
+    appId: '1:1013165214449:web:422fda51cce4965ea87750'
+  };
+  var VAPID = 'BDWcnwM3YQZStxnpraIKdqKGUuSIc4CzvH1fU_0mrs_-woc4poAHRs9_1LJDYmx-XRArhA1BDiTh_xRG89iI5l8';
+  var APP_ORIGIN = /^https:\/\/[a-z0-9-]+\.googleusercontent\.com$/;   // aplikasi Apps Script di dalam iframe
+
+  var ua = navigator.userAgent;
+  var ios = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var standalone = (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+  var supported = 'serviceWorker' in navigator && 'Notification' in window && 'PushManager' in window && window.isSecureContext;
+  var S = { src: null, origin: null, user: null, reg: null, messaging: null, token: null };
+  var box = document.getElementById('pn');
+
+  function lget(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lset(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  function perm() { return supported ? Notification.permission : 'unsupported'; }
+  function snoozed(k) { return Number(lget(k) || 0) > Date.now(); }
+  function snooze(k, days) { lset(k, String(Date.now() + days * 864e5)); }
+  function send(msg) {
+    if (!S.src) return;
+    msg.kpi = 1;
+    try { S.src.postMessage(msg, S.origin); } catch (e) {}
+  }
+  function device() {
+    var os = ios ? 'iPhone/iPad' : /Android/i.test(ua) ? 'Android' : /Windows/i.test(ua) ? 'Windows' : /Mac/i.test(ua) ? 'Mac' : /Linux/i.test(ua) ? 'Linux' : 'Lainnya';
+    var br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
+    return os + ' · ' + br + (standalone ? ' (aplikasi)' : '');
+  }
+
+  /* Service worker didaftarkan selalu (sekaligus membuat aplikasi bisa di-install) */
+  var swReady = supported ? navigator.serviceWorker.register('firebase-messaging-sw.js').then(function (r) { S.reg = r; return r; }) : Promise.reject('unsupported');
+  swReady.catch(function () {});
+
+  function messaging() {
+    if (S.messaging) return S.messaging;
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE);
+    S.messaging = firebase.messaging();
+    S.messaging.onMessage(function (payload) {
+      var n = payload.notification || payload.data || {};
+      if (document.visibilityState === 'visible') send({ type: 'fg', title: n.title, body: n.body });
+      else if (S.reg) S.reg.showNotification(n.title || 'KPI', { body: n.body || '', icon: 'icon-192.png', badge: 'icon-192.png' });
+    });
+    return S.messaging;
+  }
+
+  function getToken(fresh) {
+    return swReady.then(function (reg) {
+      return messaging().getToken({ vapidKey: VAPID, serviceWorkerRegistration: reg });
+    }).then(function (token) {
+      if (!token) return;
+      S.token = token;
+      if (S.user) send({ type: 'token', token: token, device: device(), fresh: !!fresh });
+    }).catch(function (e) { console.warn('[KPI push]', e); });
+  }
+
+  /* ---------- kartu ---------- */
+  function show(kind) {
+    var html = '';
+    if (kind === 'ask') html = '<b>🔔 Aktifkan notifikasi?</b><p>Dapatkan pemberitahuan persetujuan KPI, jadwal tahapan, dan chat dari Tim OD &amp; TM, walaupun aplikasi sedang ditutup.</p>' +
+      '<div class="pn-act"><button class="pn-no" data-a="later">Nanti</button><button class="pn-yes" data-a="enable">Aktifkan</button></div>';
+    else if (kind === 'ios') html = '<b>📲 Notifikasi di iPhone / iPad</b><p>Agar bisa menerima notifikasi:</p><ol><li>Buka halaman ini di <b style="display:inline">Safari</b>.</li>' +
+      '<li>Ketuk tombol <b style="display:inline">Share</b> (kotak dengan panah ke atas).</li><li>Pilih <b style="display:inline">Add to Home Screen</b>.</li>' +
+      '<li>Buka aplikasi dari ikon baru di layar utama, lalu login.</li></ol><div class="pn-act"><button class="pn-yes" data-a="ios-ok">Mengerti</button></div>';
+    else if (kind === 'denied') html = '<b>Notifikasi diblokir</b><p>Izinkan lewat pengaturan browser: klik ikon gembok / pengaturan di samping alamat situs → <b style="display:inline">Notifications</b> → <b style="display:inline">Allow</b>, lalu muat ulang halaman.</p>' +
+      '<div class="pn-act"><button class="pn-yes" data-a="close">Tutup</button></div>';
+    else if (kind === 'on') html = '<b>✅ Notifikasi aktif</b><p>Perangkat ini akan menerima pemberitahuan aplikasi KPI.</p>' +
+      '<div class="pn-act"><button class="pn-no" data-a="close">Tutup</button><button class="pn-yes" data-a="test">Kirim notifikasi uji</button></div>';
+    else if (kind === 'unsupported') html = '<b>Browser belum mendukung</b><p>Gunakan Chrome, Edge, atau Firefox di laptop/Android. Di iPhone, gunakan Safari lalu <b style="display:inline">Add to Home Screen</b>. ' +
+      'Notifikasi tidak bisa dari browser bawaan WhatsApp/Instagram.</p><div class="pn-act"><button class="pn-yes" data-a="close">Tutup</button></div>';
+    box.innerHTML = html;
+    box.hidden = false;
+  }
+  function hide() { box.hidden = true; }
+
+  box.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-a]') : null;
+    if (!b) return;
+    var a = b.getAttribute('data-a');
+    if (a === 'later') { snooze('pn:later', 3); hide(); }
+    else if (a === 'ios-ok') { snooze('pn:ios', 14); hide(); }
+    else if (a === 'close') hide();
+    else if (a === 'test') { send({ type: 'test' }); hide(); }
+    else if (a === 'enable') {
+      b.disabled = true; b.textContent = 'Memproses…';
+      Notification.requestPermission().then(function (p) {
+        if (p === 'granted') { getToken(true); show('on'); setTimeout(hide, 6000); }
+        else if (p === 'denied') show('denied');
+        else hide();
+      });
+    }
+  });
+
+  /* Kapan kartu ditawarkan (diminta aplikasi setelah login & tutorial selesai) */
+  function offer(manual) {
+    if (ios && !standalone) { if (manual || !snoozed('pn:ios')) show('ios'); return; }
+    if (!supported) { if (manual) show('unsupported'); return; }
+    var p = perm();
+    if (p === 'granted') { if (manual) show('on'); return; }
+    if (p === 'denied') { if (manual) show('denied'); return; }
+    if (manual || !snoozed('pn:later')) show('ask');
+  }
+
+  /* ---------- pesan dari aplikasi ---------- */
+  window.addEventListener('message', function (e) {
+    if (!APP_ORIGIN.test(e.origin) || !e.data || e.data.kpi !== 1) return;
+    S.src = e.source; S.origin = e.origin;
+    var d = e.data;
+    if (d.type === 'hello') {
+      S.user = d.user || null;
+      send({ type: 'state', supported: supported, permission: perm(), ios: ios, standalone: standalone });
+      if (perm() === 'granted') getToken(false);
+    }
+    else if (d.type === 'ask') { if (S.user) offer(false); }
+    else if (d.type === 'open') offer(true);
+    else if (d.type === 'logout') { S.user = null; hide(); }
+  });
+})();
+</script>
 </body>
 </html>
